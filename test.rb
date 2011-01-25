@@ -38,16 +38,14 @@ end
 #  end
 #end
 
-log = Log.new
-a = DnsTest::Tester.new(:log => log)
-
-a.set_hints(nil)
-a.run_test("news.uli.it.", "A")
 
 def filter_trace(trace)
-  trace[:queries].each do |q|
-    q[:soa] = q[:soa].answer[0].serial
-    q[:response] = nil
+  trace[:found_serials].each do |soa_serial,q|
+    q[:response].instance_eval do
+      def pretty_print(pp)
+        pp.text '<Filtered...>'
+      end
+    end
 
     if q[:sub]
       filter_trace(q[:sub])
@@ -55,11 +53,18 @@ def filter_trace(trace)
   end
 end
 
-#puts "############# Result ##########"
-#filter_trace a.trace
-#pp a.trace
+log = Log.new
+a = DnsTest::Tester.new(:log => log)
+a.tcp = false
+a.run_test("news.uli.it.", "A")
+
+puts "############# Result ##########"
+filter_trace a.trace
+pp a.trace
 
 puts "############# Answer ##########"
 puts a.find_answer_in_trace
+#puts "############# Authorities #########"
+#pp a.zones
 puts "###############################"
 
