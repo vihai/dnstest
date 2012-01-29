@@ -1,4 +1,4 @@
-require 'yggdra_plugins/version'
+require 'dnstest/version'
 
 require 'dnsruby'
 
