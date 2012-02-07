@@ -374,12 +374,13 @@ class Tester
 
       begin
         soa_packet = resolver.send_message(qmsg)
-      rescue Dnsruby::ResolvError, Dnsruby::OtherResolvError, IOError => e
+      rescue Dnsruby::ResolvError, Dnsruby::ResolvTimeout, Dnsruby::OtherResolvError, IOError => e
         @zones[known_zone][auth_name][auth_addr][protocol] = e
         trace_authority[auth_addr][protocol] = { :error => e.class.name.split('::').last.upcase }
         @log.debug "Server error #{e} for #{authority.nsdname}"
         return
       end
+
       @log.debug "SOA serial is #{soa_packet.answer[0].serial}"
 
       @zones[known_zone][auth_name][auth_addr][protocol] = soa_packet
@@ -408,7 +409,7 @@ class Tester
 
     begin
       packet = resolver.send_message(qmsg)
-    rescue Dnsruby::ResolvError, Dnsruby::OtherResolvError => e
+    rescue Dnsruby::ResolvError, Dnsruby::ResolvTimeout, Dnsruby::OtherResolvError, IOError => e
       trace_block[:error] = e.class.name.split('::').last.upcase
       @log.warn "Server error #{e.to_s} for #{authority}"
       return false
