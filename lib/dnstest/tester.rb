@@ -386,12 +386,16 @@ class Tester
       @zones[known_zone][auth_name][auth_addr][protocol] = soa_packet
     end
 
-    trace_authority[auth_addr][protocol] = {
-      :serial => soa_packet.answer[0].serial,
-    }
+    if soa_packet.kind_of?(Exception)
+      trace_authority[auth_addr][protocol] = { :error => e.class.name.split('::').last.upcase }
+    else
+      trace_authority[auth_addr][protocol] = {
+        :serial => soa_packet.answer[0].serial,
+      }
 
-    trace_authority[auth_addr][protocol][:soa_packet] = soa_packet if @include_packets
-    trace_authority[auth_addr][protocol][:soa_packet_text] = soa_packet.to_s if @include_packets_text
+      trace_authority[auth_addr][protocol][:soa_packet] = soa_packet if @include_packets
+      trace_authority[auth_addr][protocol][:soa_packet_text] = soa_packet.to_s if @include_packets_text
+    end
   end
 
   def do_query_authority(question, known_zone, authority, addr, resolver, depth, trace, trace_block)
