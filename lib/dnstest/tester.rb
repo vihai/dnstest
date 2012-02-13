@@ -449,16 +449,16 @@ class Tester
       raise RecursionTooDeep
     end
 
-    trace[:question_name] = question.name
-    trace[:question_type] = question.type
-    trace[:question_class] = question.klass
+    trace[:question_name] = question.name.to_s
+    trace[:question_type] = question.type.to_s
+    trace[:question_class] = question.klass.to_s
     trace[:depth] = depth
 
     @log.debug ">>>>>>>"
-    @log.debug "Recursion initiated, depth #{depth}, question '#{question.name} #{question.klass.to_s} #{question.type.to_s}'"
+    @log.debug "Recursion initiated, depth #{depth}, question '#{question.name} #{question.klass} #{question.type}'"
     @log.debug "Searching for the most specific authority related to '#{question.name}'"
 
-    known_zone, known_authorities = get_closest_zone(question.name)
+    known_zone, known_authorities = get_closest_zone(question.name.to_s)
 
     trace[:found_zone] = known_zone
     @log.debug "Found authorities for '#{known_zone}':"
