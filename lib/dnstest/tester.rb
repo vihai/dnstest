@@ -14,6 +14,8 @@ class Question
   attr_accessor :klass
 
   def initialize(name, type = A, klass = IN)
+    name = Dnsruby::Name.create(name) if !name.kind_of?(Dnsruby::Name)
+
     @name = name
     @type = type
     @klass = klass
@@ -158,6 +160,8 @@ class Tester
     @trace = { }
     @zones = { }
 
+    name = name + '.' if name[-1..-1] != '.'
+
     # Make sure the hint servers are initialized.
     retrieve_root_zone
 
@@ -198,7 +202,7 @@ class Tester
         # Bailiwick rule, do not cache if answer does not match question
 
         if rr.name == question.name &&
-           rr.type == question.type &&
+           (rr.type == question.type || question.type == Dnsruby::Types::ANY) &&
            rr.klass == question.klass
           # Cache the response
           @log.debug "Cacheing answer '#{rr}'"
@@ -244,7 +248,7 @@ class Tester
         # Bailiwick rule, do not cache if answer does not match question
 
         if rr.name == question.name &&
-           rr.type == question.type &&
+           (rr.type == question.type || question.type == Dnsruby::Types::ANY) &&
            rr.klass == question.klass
           @log.debug "**** We have our answer, yippieee ****"
           trace_block[:kind] = :answer
@@ -258,7 +262,7 @@ class Tester
       @log.debug "The answer does not contain the record we were looking for :("
       trace_block[:kind] = :answer_without_record
 
-      return nil
+      return packet
 
     elsif !packet.authority.empty?
       @log.debug "**** We got a referral! ****"
@@ -290,12 +294,12 @@ class Tester
           next
         end
 
-        if packet.question[0].qname != rr.name &&
-           !packet.question[0].qname.subdomain_of?(rr.name)
+        if question.name != rr.name &&
+           !question.name.subdomain_of?(rr.name)
           refto[:valid] = false
           refto[:notes] ||= ''
-          refto[:notes] += "Bailiwick violation! Question #{packet.question[0].qname} is not subdomain of authority #{rr.name}\n"
-          @log.warn "Bailiwick violation! Question #{packet.question[0].qname} is not subdomain of authority #{rr.name}"
+          refto[:notes] += "Bailiwick violation! Question #{question.name} is not subdomain of authority #{rr.name}\n"
+          @log.warn "Bailiwick violation! Question #{question.name} is not subdomain of authority #{rr.name}"
           next
         end
 
@@ -485,7 +489,8 @@ class Tester
         trace_authority[:nsaddr_sub_aaaa] ||= {}
         aaaa_answer = normal_recursion(Question.new(authority.nsdname, AAAA, IN), depth + 1, true, trace_authority[:nsaddr_sub_aaaa])
 
-        if !a_answer && !aaaa_answer
+        if (!a_answer || a_answer.answer.empty?) &&
+           (!aaaa_answer || aaaa_answer.answer.empty?)
           @log.warn "No A or AAAA response found!"
           next
         end
