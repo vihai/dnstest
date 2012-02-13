@@ -161,9 +161,7 @@ class Tester
     # Make sure the hint servers are initialized.
     retrieve_root_zone
 
-    normal_recursion(Question.new(name, type, klass), 0, no_validation, @trace)
-#    Dnsruby::Dnssec.validate(ret) if !no_validation
-    #      print "\n\nRESPONSE:\n#{ret}\n"
+    return normal_recursion(Question.new(name, type, klass), 0, no_validation, @trace)
   end
 
   def find_answer_in_trace
@@ -192,22 +190,24 @@ class Tester
       raise "Response bit not set!"
     end
 
-    if !packet.answer.empty?
-      # We might have an answer but let's check if the label matches the question
-      @log.debug "**** We got an answer! ****"
+    if packet.header.aa
+      @log.debug "**** We got an authoritative answer! ****"
 
+      # Cache the answer
       packet.answer.each do |rr|
         # Bailiwick rule, do not cache if answer does not match question
 
-        if rr.name == packet.question[0].qname
+        if rr.name == question.name &&
+           rr.type == question.type &&
+           rr.klass == question.klass
           # Cache the response
           @log.debug "Cacheing answer '#{rr}'"
           @cache << rr
         end
       end
 
+      # Cache the additional data
       packet.additional.each do |rr|
-
         knz = Dnsruby::Name.create(known_zone)
         knz.absolute = true
 
@@ -235,23 +235,33 @@ class Tester
           trace_block[:cname_dest] = rr.cname
           trace_block[:sub] = {}
 
-          normal_recursion(Question.new(rr.cname, question.type, question.klass), depth + 1, true, trace_block[:sub])
-          return
+          return normal_recursion(Question.new(rr.cname, question.type, question.klass), depth + 1, true, trace_block[:sub])
         end
       end
 
-      @log.debug "**** We have our answer, yippieee ****"
-      trace_block[:kind] = :answer
-      trace_block[:answer_data] = packet.answer.map { |x| x.to_s }
+      # Search for answer to our question
+      packet.answer.each do |rr|
+        # Bailiwick rule, do not cache if answer does not match question
+
+        if rr.name == question.name &&
+           rr.type == question.type &&
+           rr.klass == question.klass
+          @log.debug "**** We have our answer, yippieee ****"
+          trace_block[:kind] = :answer
+          trace_block[:answer_packet] = packet if @include_packets
+          trace_block[:answer_packet_text] = packet if @include_packets_text
+
+          return packet
+        end
+      end
+
+      @log.debug "The answer does not contain the record we were looking for :("
+      trace_block[:kind] = :answer_without_record
+
+      return nil
 
     elsif !packet.authority.empty?
       @log.debug "**** We got a referral! ****"
-
-#      if !packet.header.aa
-#        trace[:log] << "We have a lame server!"
-#        raise LameServer
-#      end
-#
 
       trace_block[:kind] = :referral
       trace_block[:refer_to] = {}
@@ -280,11 +290,12 @@ class Tester
           next
         end
 
-        if !packet.question[0].qname.subdomain_of?(rr.name)
+        if packet.question[0].qname != rr.name &&
+           !packet.question[0].qname.subdomain_of?(rr.name)
           refto[:valid] = false
           refto[:notes] ||= ''
-          refto[:notes] += "Bailiwick violation! Question is not subdomain of authority\n"
-          @log.warn "Bailiwick violation! Question is not subdomain of authority"
+          refto[:notes] += "Bailiwick violation! Question #{packet.question[0].qname} is not subdomain of authority #{rr.name}\n"
+          @log.warn "Bailiwick violation! Question #{packet.question[0].qname} is not subdomain of authority #{rr.name}"
           next
         end
 
@@ -315,21 +326,24 @@ class Tester
       end
 
       trace_block[:sub] = {}
-      normal_recursion(question, depth + 1, true, trace_block[:sub])
-    else
-      raise "Whaaat?"
+
+      return normal_recursion(question, depth + 1, true, trace_block[:sub])
     end
+
+    raise "Whaaat?"
   end
 
   def recursive_find_answer_in_trace(trace)
     trace[:found_authorities].each do |auth_name,auth_addrs|
       auth_addrs.each do |auth_addr,auth_protos|
+        next if auth_addr == :nsaddr_sub_a || auth_addr == :nsaddr_sub_aaaa
+
         auth_protos.each do |auth_proto,auth|
 
           next if auth[:error]
 
           if auth[:kind] == :answer
-            return auth[:response]
+            return auth[:answer_data]
           elsif auth[:sub]
             return recursive_find_answer_in_trace(auth[:sub])
           end
@@ -343,7 +357,7 @@ class Tester
   def obtain_soa_for_authority(known_zone, authority, addr, resolver, trace_authority)
 
     protocol = resolver.use_tcp ? :tcp : :udp
-    auth_name = authority.to_s
+    auth_name = authority.nsdname.to_s
     auth_addr = addr.address.to_s
 
     trace_authority[auth_addr] = {}
@@ -356,12 +370,10 @@ class Tester
 
       soa_packet = @zones[known_zone][auth_name][auth_addr][protocol]
 
-      @log.debug "Already have SOA record for zone #{known_zone}, avoid asking again"
+      @log.debug "Already have SOA record for #{known_zone}/#{auth_name}/#{auth_addr}/#{protocol}," +
+                 " avoiding asking again"
     else
-      @log.debug "Requesting SOA with #{resolver.use_tcp ? 'TCP' : 'UDP'} "
-                 " for zone '#{known_zone}' to authority #{authority.nsdname}"
-                 " using address #{addr.address}"
-
+      @log.debug "Requesting SOA for #{known_zone}/#{auth_name}/#{auth_addr}/#{protocol}"
       @zones[known_zone] ||= {}
       @zones[known_zone][auth_name] ||= {}
       @zones[known_zone][auth_name][auth_addr] ||= {}
@@ -387,7 +399,7 @@ class Tester
     end
 
     if soa_packet.kind_of?(Exception)
-      trace_authority[auth_addr][protocol] = { :error => e.class.name.split('::').last.upcase }
+      trace_authority[auth_addr][protocol] = { :error => soa_packet.class.name.split('::').last.upcase }
     else
       trace_authority[auth_addr][protocol] = {
         :serial => soa_packet.answer[0].serial,
@@ -416,20 +428,19 @@ class Tester
     rescue Dnsruby::ResolvError, Dnsruby::ResolvTimeout, Dnsruby::OtherResolvError, IOError => e
       trace_block[:error] = e.class.name.split('::').last.upcase
       @log.warn "Server error #{e.to_s} for #{authority}"
-      return false
-    else
-      trace_block[:chosen] = true
-      normal_recursion_handle_response(question, known_zone, packet, depth, trace_block)
+      return nil
     end
 
-    return true
+    trace_block[:chosen] = true
+
+    return normal_recursion_handle_response(question, known_zone, packet, depth, trace_block)
   end
 
   def normal_recursion(question, depth, no_validation, trace) # :nodoc:
 
     # TODO Lookup question in cache and return immediately if we already know it
 
-    if depth > 255
+    if depth > 64
       @log.error "Recursion too deep, aborting"
       raise RecursionTooDeep
     end
@@ -440,7 +451,7 @@ class Tester
     trace[:depth] = depth
 
     @log.debug ">>>>>>>"
-    @log.debug "Recursion initiated, depth #{depth}, question '#{question.name}'"
+    @log.debug "Recursion initiated, depth #{depth}, question '#{question.name} #{question.klass.to_s} #{question.type.to_s}'"
     @log.debug "Searching for the most specific authority related to '#{question.name}'"
 
     known_zone, known_authorities = get_closest_zone(question.name)
@@ -456,7 +467,7 @@ class Tester
 
     known_authorities.each do |authority|
 
-     trace_authority = trace[:found_authorities][authority.nsdname.to_s]
+      trace_authority = trace[:found_authorities][authority.nsdname.to_s]
 
       ###################################
       # Check if we have A/AAAA records for the authority
@@ -466,22 +477,27 @@ class Tester
         # TODO: Add check to see if there is a glue infinite loop
         @log.debug "#{authority.nsdname} does not have A/AAAA record in cache, recurse searching for it "
 
+        @log.debug "Recurring for #{authority.nsdname} IN A"
         trace_authority[:nsaddr_sub_a] ||= {}
-        normal_recursion(Question.new(authority.nsdname, A, IN), depth + 1, true, trace_authority[:nsaddr_sub_a])
-        a_answer = recursive_find_answer_in_trace(trace_authority[:nsaddr_sub_a])
+        a_answer = normal_recursion(Question.new(authority.nsdname, A, IN), depth + 1, true, trace_authority[:nsaddr_sub_a])
 
+        @log.debug "Recurring for #{authority.nsdname} IN AAAA"
         trace_authority[:nsaddr_sub_aaaa] ||= {}
-        normal_recursion(Question.new(authority.nsdname, AAAA, IN), depth + 1, true, trace_authority[:nsaddr_sub_aaaa])
-        aaaa_answer = recursive_find_answer_in_trace(trace_authority[:nsaddr_sub_aaaa])
+        aaaa_answer = normal_recursion(Question.new(authority.nsdname, AAAA, IN), depth + 1, true, trace_authority[:nsaddr_sub_aaaa])
 
-        next if !a_answer && !aaaa_answer
+        if !a_answer && !aaaa_answer
+          @log.warn "No A or AAAA response found!"
+          next
+        end
 
-        nsaddrs = a_answer.answer + aaaa_answer.answer
+        nsaddrs = []
+        nsaddrs += a_answer.answer if a_answer
+        nsaddrs += aaaa_answer.answer if aaaa_answer
       else
         @log.debug "Authority #{authority.nsdname} has addresses #{nsaddrs.collect { |x| x.address.to_s }}"
       end
 
-      @log.debug "Making request to authority #{authority.nsdname}"
+      @log.debug "Requesting SOA for authority #{authority.nsdname} for all addresses/protocols"
 
       nsaddrs.each do |addr|
         next if addr.type == A && !@ipv4
@@ -510,22 +526,27 @@ class Tester
 #
 #      @log.debug "Found #{trace[:found_serials].count} serials"
 
-    catch :done do
-      trace[:found_authorities].each do |auth_name,auth_addrs|
-        auth_addrs.each do |auth_addr,auth_protos|
-          auth_protos.each do |auth_proto,auth|
 
-            next if auth[:error] # There already was an error while asking for SOA
+    trace[:found_authorities].each do |auth_name,auth_addrs|
+      auth_addrs.each do |auth_addr,auth_protos|
+        next if auth_addr == :nsaddr_sub_a || auth_addr == :nsaddr_sub_aaaa
 
-            res = do_query_authority(question, known_zone, auth_name, auth_addr,
-                               auth_proto == :tcp ? @resolver_tcp : @resolver_udp,
-                               depth, trace, auth)
+        auth_protos.each do |auth_proto,auth|
 
-            throw :done if res
-          end
+          next if auth[:error] # There already was an error while asking for SOA
+
+          res = do_query_authority(question, known_zone, auth_name, auth_addr,
+                             auth_proto == :tcp ? @resolver_tcp : @resolver_udp,
+                             depth, trace, auth)
+
+          return res if res
         end
       end
     end
+
+    @log.debug "No authority gave me an answer !??!"
+
+    return nil
   end
 end
 
