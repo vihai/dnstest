@@ -14,7 +14,19 @@ class Log
     puts str
   end
 
+  def notice(str)
+    puts str
+  end
+
   def warn(str)
+    puts str
+  end
+
+  def error(str)
+    puts str
+  end
+
+  def crit(str)
     puts str
   end
 end
@@ -66,9 +78,10 @@ def filter_trace(trace)
 end
 
 log = Log.new
-a = DnsTest::Tester.new(:log => log, :include_packets => false)
+a = DnsTest::Tester.new(:log => log, :include_packets => false, :include_packets_text => false)
 a.tcp = false
-a.run_test("news.uli.it.", "A")
+#a.run_test("news.uli.it.", "A")
+a.run_test("www.voismart.it.", "A")
 
 puts "############# Result ##########"
 
